@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0002 · Measure Your Machine's Roofline</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --ok:#047857; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.6; }
+  .page { max-width:760px; margin:0 auto; padding:48px 28px 80px; }
+  .lesson-tag { font-size:.8rem; font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; }
+  h1 { font-size:1.7rem; margin:6px 0 4px; letter-spacing:-0.02em; }
+  .goal { color:var(--muted); margin-bottom:24px; }
+  h2 { font-size:1.15rem; margin:34px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--accent); }
+  p, li { font-size:.95rem; }
+  a { color:var(--accent); }
+  pre { background:#1e1e2e; color:#e6e6f0; padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:.83rem; line-height:1.5; }
+  code { font-family:"SF Mono",Menlo,monospace; }
+  p code, li code, td code { background:#eef; color:var(--ink); padding:1px 5px; border-radius:4px; font-size:.85em; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:14px 0; }
+  .step h3 { margin:0 0 8px; font-size:1rem; }
+  .predict { background:#fffbeb; border-left:4px solid #b45309; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .reveal { margin:10px 0; }
+  .reveal summary { cursor:pointer; font-weight:600; color:var(--accent); }
+  .win { background:#f0fdf4; border-left:4px solid var(--ok); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .quiz { background:var(--accent-soft); border-radius:12px; padding:16px 20px; margin:16px 0; }
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:.9rem; background:#fff; }
+  th, td { text-align:left; padding:7px 11px; border:1px solid var(--line); }
+  th { background:var(--accent-soft); }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="lesson-tag">Lesson 0002 · ~60 minutes · Phase 1</span>
+<h1>Measure Your Machine's Roofline</h1>
+<p class="goal"><strong>The one thing this lesson teaches:</strong> any kernel or model can be placed on a single chart — the <em>roofline</em> — that tells you whether it's compute-bound or memory-bound, and therefore <em>which optimizations can possibly help</em>. You'll build that chart for your M4 Max from your own measurements.</p>
+
+<h2>1 · The idea in three sentences</h2>
+<p>Every operation does some math (FLOPs) and moves some bytes. The ratio is its <strong>arithmetic intensity</strong>: <code>AI = FLOPs / bytes moved</code>. Your machine has two ceilings — peak compute (FLOP/s) and peak memory bandwidth (bytes/s) — and whichever one an operation hits first is its speed limit (<a href="https://horace.io/brrr_intro.html">Horace He</a> calls these compute-bound vs bandwidth-bound regimes).</p>
+<p>The crossover point is the <strong>ridge point</strong>:</p>
+<pre><code>ridge (FLOPs/byte) = peak compute (FLOP/s) ÷ peak bandwidth (B/s)
+
+AI below the ridge  → memory-bound  → more TFLOPs won't help
+AI above the ridge  → compute-bound → more bandwidth won't help</code></pre>
+
+<h2>2 · Measure your two ceilings</h2>
+<p>Spec sheets lie (or at least round up). Inference engineers measure. Save this as <code>roofline.py</code> in your workspace and run it in the venv from lesson 0001:</p>
+
+<div class="step">
+<h3>Step 1 — The benchmark script</h3>
+<pre><code>import time
+import mlx.core as mx
+
+def bench(f, iters=20, warmup=5):
+    for _ in range(warmup):
+        mx.eval(f())
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        mx.eval(f())
+    return (time.perf_counter() - t0) / iters
+
+# --- Ceiling 1: compute (big fp16 matmul, the friendliest workload) ---
+N = 4096
+A = mx.random.normal((N, N)).astype(mx.float16)
+B = mx.random.normal((N, N)).astype(mx.float16)
+t = bench(lambda: A @ B)
+tflops = (2 * N**3) / t / 1e12
+print(f"matmul {N}x{N}:  {t*1e3:.2f} ms   ->  {tflops:.1f} TFLOP/s (fp16)")
+
+# --- Ceiling 2: bandwidth (elementwise add: read 2 arrays, write 1) ---
+M = 256_000_000                      # 1 GB per fp32 array
+X = mx.random.normal((M,))
+Y = mx.random.normal((M,))
+t = bench(lambda: X + Y)
+gbps = (3 * M * 4) / t / 1e9
+print(f"elementwise add: {t*1e3:.2f} ms   ->  {gbps:.0f} GB/s")
+
+print(f"ridge point: {tflops*1e12 / (gbps*1e9):.0f} FLOPs/byte")</code></pre>
+<p>Why these two workloads: a large matmul does <code>2N³</code> FLOPs while moving only <code>~3·2N²</code> bytes (AI ≈ 1,365 — deep in compute-bound territory), so it exposes the compute ceiling. Elementwise add does 1 FLOP per 12 bytes (AI ≈ 0.08) — pure memory traffic, so it exposes the bandwidth ceiling.</p>
+</div>
+
+<div class="predict">
+<strong>Predict before running:</strong> (a) Will measured bandwidth land above or below the marketing number for your machine (546 GB/s)? (b) Will the ridge point be closer to 5, 50, or 500 FLOPs/byte?
+</div>
+
+<div class="reveal"><details><summary>Typical results &amp; what they mean</summary>
+<p>Expect bandwidth around 350–480 GB/s (achievable is always below nominal — page faults, cache effects, write-allocate traffic) and fp16 matmul somewhere in the tens of TFLOP/s. The ridge point usually lands in the <strong>tens of FLOPs/byte</strong>. The exact values don't matter; <em>your</em> values do — write them down, they're constants you'll reuse for months. If a number looks absurd (e.g. 5 GB/s), ask your teaching agent before moving on — first-run compilation or unified-memory paging may have polluted the timing.</p>
+</details></div>
+
+<h2>3 · Place last lesson's workloads on your roofline</h2>
+<div class="step">
+<h3>Arithmetic intensity of decode vs prefill</h3>
+<p>In decode, each token is roughly a series of <strong>matrix–vector</strong> products: every weight is read once and used for ~2 FLOPs.</p>
+<table>
+<tr><th>Workload</th><th>AI (FLOPs per byte of weights)</th><th>vs your ridge</th></tr>
+<tr><td>Decode, fp16 weights</td><td>2 FLOPs / 2 B = <strong>1</strong></td><td>far below → memory-bound</td></tr>
+<tr><td>Decode, 4-bit weights</td><td>2 FLOPs / 0.5 B = <strong>4</strong></td><td>still below → memory-bound</td></tr>
+<tr><td>Prefill (long prompt) / big matmul</td><td>hundreds–thousands</td><td>above → compute-bound</td></tr>
+</table>
+<p>This is lesson 0001's asymmetry, now expressed precisely: decode sits at AI ≈ 1–4 against a ridge in the tens. <em>No amount of compute</em> fixes that — only moving fewer bytes (quantization, smaller models) or sharing each byte across more work (batching).</p>
+</div>
+
+<h2>4 · The punchline: batching moves you along the roofline</h2>
+<p>If 8 requests decode together, each weight byte read from memory now serves 8 matvecs: AI multiplies by the batch size. Somewhere around <code>batch ≈ ridge ÷ AI_single</code>, decode crosses the ridge and becomes compute-bound. This single observation is why continuous batching (vLLM, month 5) exists, and why serving economics reward batch throughput.</p>
+
+<h2>5 · Self-check</h2>
+<div class="quiz">
+<ol>
+<li>Using <em>your</em> measured ridge point: roughly what batch size makes fp16 decode compute-bound?</li>
+<li>A vendor offers you a chip with 4× the TFLOPs and the same bandwidth. How much faster is single-stream decode?</li>
+<li>Why did we benchmark with <code>mx.eval()</code> inside the loop?</li>
+<li>From lesson 0001: explain your 4-bit vs 8-bit result in roofline vocabulary, in one sentence.</li>
+</ol>
+<details><summary>Answers</summary>
+<ol>
+<li>batch ≈ ridge ÷ 1. If your ridge is ~40 FLOPs/byte, around batch 40 for fp16 (≈ ridge ÷ 4 for 4-bit weights).</li>
+<li>Essentially no faster (~1×). Decode at AI ≈ 1 is bandwidth-bound; the extra TFLOPs sit idle.</li>
+<li>MLX is lazy — without forcing evaluation you'd time graph construction, not execution. (Same trap exists in CUDA with async launches; you'll meet <code>cudaDeviceSynchronize</code> in month 2.)</li>
+<li>Halving bytes per weight doubled arithmetic intensity, and since decode is memory-bound, throughput scaled with bytes moved — ~2× faster.</li>
+</ol>
+</details>
+</div>
+
+<h2>6 · Session follow-up: what if TFLOPs doubled?</h2>
+<p>After measuring <strong>14.2 TFLOP/s</strong> and <strong>436 GB/s</strong> (ridge ≈ <strong>33 FLOPs/byte</strong>), this retrieval question came up in session:</p>
+
+<div class="predict">
+<strong>Q:</strong> Same bandwidth, double the TFLOPs (28.4). What happens to the ridge point — and does your local LLM generate any faster?<br><br>
+<strong>Answer given:</strong> "Bandwidth, not compute, sets the ceiling — if we double the TFLOPs the machine will sit idle."<br><br>
+<strong>Verdict:</strong> Right where it matters most — decode tok/s doesn't improve at all; compute just idles harder. Two refinements: (1) the ridge <em>doubles</em> to 28.4 ÷ 0.436 ≈ <strong>65 FLOPs/byte</strong>, meaning <em>more</em> workloads now count as memory-bound and the fp16 batch crossover moves from ~33 to ~65; (2) "sits idle" is true for <em>decode</em>, but prefill is compute-bound, so time-to-first-token would roughly halve. One hardware change, two different per-phase verdicts.
+</div>
+
+<div class="step">
+<h3>Your roofline, before and after doubling compute</h3>
+<svg viewBox="0 0 720 470" role="img" aria-label="Log-log roofline chart with measured 436 GB/s bandwidth slope, 14.2 TFLOP/s compute roof, hypothetical 28.4 TFLOP/s roof, ridge points at 33 and 65 FLOPs per byte, and decode/prefill workloads marked" style="width:100%;height:auto;background:#fff;border-radius:8px;">
+  <!-- axes -->
+  <line x1="70" y1="390" x2="695" y2="390" stroke="#5c5c70" stroke-width="1.5"/>
+  <line x1="70" y1="45" x2="70" y2="390" stroke="#5c5c70" stroke-width="1.5"/>
+  <text x="380" y="438" text-anchor="middle" font-size="13" fill="#5c5c70">arithmetic intensity (FLOPs/byte, log scale)</text>
+  <text x="22" y="220" text-anchor="middle" font-size="13" fill="#5c5c70" transform="rotate(-90 22 220)">achievable TFLOP/s (log scale)</text>
+
+  <!-- x ticks -->
+  <text x="100" y="408" text-anchor="middle" font-size="12" fill="#5c5c70">1</text>
+  <text x="214" y="408" text-anchor="middle" font-size="12" fill="#5c5c70">4</text>
+  <text x="389" y="408" text-anchor="middle" font-size="12" fill="#4338ca" font-weight="700">33</text>
+  <text x="445" y="408" text-anchor="middle" font-size="12" fill="#b45309" font-weight="700">65</text>
+  <text x="670" y="408" text-anchor="middle" font-size="12" fill="#5c5c70">~1000</text>
+
+  <!-- y ticks -->
+  <text x="64" y="338" text-anchor="end" font-size="12" fill="#5c5c70">0.44</text>
+  <text x="64" y="137" text-anchor="end" font-size="12" fill="#4338ca" font-weight="700">14.2</text>
+  <text x="64" y="97" text-anchor="end" font-size="12" fill="#b45309" font-weight="700">28.4</text>
+
+  <!-- ridge verticals -->
+  <line x1="389" y1="133" x2="389" y2="390" stroke="#4338ca" stroke-width="1" stroke-dasharray="3 4" opacity="0.5"/>
+  <line x1="445" y1="93" x2="445" y2="390" stroke="#b45309" stroke-width="1" stroke-dasharray="3 4" opacity="0.5"/>
+
+  <!-- bandwidth slope (solid up to ridge 1) -->
+  <line x1="71" y1="355" x2="389" y2="133" stroke="#047857" stroke-width="2.5"/>
+  <!-- slope continuation, only matters with the bigger roof -->
+  <line x1="389" y1="133" x2="445" y2="93" stroke="#047857" stroke-width="2.5" stroke-dasharray="6 5"/>
+  <text x="148" y="268" font-size="12.5" fill="#047857" transform="rotate(-35 148 268)" font-weight="600">436 GB/s × AI  (memory ceiling — unchanged)</text>
+
+  <!-- compute roofs -->
+  <line x1="389" y1="133" x2="695" y2="133" stroke="#4338ca" stroke-width="2.5"/>
+  <text x="540" y="152" text-anchor="middle" font-size="12.5" fill="#4338ca" font-weight="600">14.2 TFLOP/s roof — your M4 Max</text>
+  <line x1="445" y1="93" x2="695" y2="93" stroke="#b45309" stroke-width="2.5" stroke-dasharray="6 5"/>
+  <text x="540" y="82" text-anchor="middle" font-size="12.5" fill="#b45309" font-weight="600">28.4 TFLOP/s roof — hypothetical 2×</text>
+
+  <!-- ridge shift arrow -->
+  <line x1="392" y1="368" x2="438" y2="368" stroke="#b45309" stroke-width="1.8"/>
+  <polygon points="445,368 435,363 435,373" fill="#b45309"/>
+  <text x="418" y="358" text-anchor="middle" font-size="11.5" fill="#b45309" font-weight="600">ridge: 33 → 65</text>
+
+  <!-- workload points -->
+  <circle cx="100" cy="335" r="6" fill="#4338ca"/>
+  <text x="112" y="332" font-size="12" fill="#1a1a2e">decode fp16 (AI≈1) — doesn't move</text>
+  <circle cx="214" cy="255" r="6" fill="#4338ca"/>
+  <text x="226" y="252" font-size="12" fill="#1a1a2e">decode 4-bit (AI≈4) — doesn't move</text>
+  <circle cx="670" cy="133" r="6" fill="#4338ca"/>
+  <circle cx="670" cy="93" r="6" fill="none" stroke="#b45309" stroke-width="2"/>
+  <line x1="670" y1="126" x2="670" y2="101" stroke="#b45309" stroke-width="1.5" stroke-dasharray="2 3"/>
+  <text x="660" y="116" text-anchor="end" font-size="12" fill="#b45309">prefill rises to the new roof (~2× faster)</text>
+  <text x="660" y="170" text-anchor="end" font-size="12" fill="#1a1a2e">prefill (AI≈10³)</text>
+</svg>
+<p>How to read it: workloads live on the chart at their arithmetic intensity; their speed limit is the <em>lower</em> of the two ceilings above them. Doubling compute lifts only the flat roof — and only workloads to the <strong>right</strong> of the ridge ever touch it. Your decode points sit far left on the unchanged green bandwidth slope, which is why generation tok/s doesn't move. Prefill sits on the flat roof, so it rises with it. And the ridge sliding right (33 → 65) means batching now has to work <em>twice as hard</em> before decode goes compute-bound.</p>
+</div>
+
+<div class="step">
+<h3>What "doubling TFLOPs" means physically</h3>
+<p>TFLOP/s is set by how much math silicon you have and how fast it cycles. Hardware designers get there four ways:</p>
+<ul>
+<li><strong>More compute units</strong> — more GPU cores (NVIDIA: more SMs; Apple: M4 Pro's 20-core GPU vs your M4 Max's 40-core). Literally more square millimeters of ALUs.</li>
+<li><strong>Higher clocks</strong> — the same ALUs cycle more often. Costs power and heat quadratically-ish, so it never gives 2× alone.</li>
+<li><strong>Wider math per unit</strong> — dedicated matrix engines that do many multiply-accumulates per cycle (NVIDIA tensor cores; Apple's neural accelerators). The cheapest big multiplier in modern chips.</li>
+<li><strong>Lower precision</strong> — fp16 → fp8 doubles <em>rated</em> TFLOPs on the same transistors. Spec sheets love this; always check which precision a TFLOPs claim refers to.</li>
+</ul>
+<p>Bandwidth lives in a <em>different</em> part of the chip: memory controllers, bus width (your M4 Max pairs its 40 GPU cores with a 512-bit LPDDR5X bus — that's where 546 GB/s comes from; the M4 Pro's narrower bus gives 273 GB/s), and DRAM speed. Because compute and bandwidth come from separate silicon budgets — and ALUs are cheaper to add than memory pins — <strong>every GPU generation raises the ridge</strong>: compute grows faster than bandwidth. Each generation, more of the world becomes memory-bound. That trend is, in one sentence, why inference engineering is mostly memory engineering, and why this lesson's chart is the one you'll keep redrawing for years.</p>
+</div>
+
+<div class="win"><strong>Your win:</strong> you now own two measured constants for your machine (peak TFLOP/s, peak GB/s) and one derived one (ridge point), and you can classify any workload as compute- or memory-bound before optimizing it. Interviewers probe exactly this; profilers like Nsight Compute (month 3) just automate the chart you built by hand today.</div>
+
+<p class="footer">Questions, weird numbers, or want the optional matplotlib roofline plot? Ask your teaching agent. New companion reference: <code>reference/performance-glossary.html</code> — the vocabulary from lessons 1–2, kept current from here on. Next lesson: starting the C++ track (learncpp ch. 1–4) with a performance twist.<br><br>Open this lesson: <code>open ~/playground-ai/research/lessons/0002-measure-your-roofline.html</code></p>
+
+</div>
+</body>
+</html>

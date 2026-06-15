@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0003 · First C++, and the Cache Line You Can Measure</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --ok:#047857; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.6; }
+  .page { max-width:760px; margin:0 auto; padding:48px 28px 80px; }
+  .lesson-tag { font-size:.8rem; font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; }
+  h1 { font-size:1.7rem; margin:6px 0 4px; letter-spacing:-0.02em; }
+  .goal { color:var(--muted); margin-bottom:24px; }
+  h2 { font-size:1.15rem; margin:34px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--accent); }
+  p, li { font-size:.95rem; }
+  a { color:var(--accent); }
+  pre { background:#1e1e2e; color:#e6e6f0; padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:.83rem; line-height:1.5; }
+  code { font-family:"SF Mono",Menlo,monospace; }
+  p code, li code, td code { background:#eef; color:var(--ink); padding:1px 5px; border-radius:4px; font-size:.85em; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:14px 0; }
+  .step h3 { margin:0 0 8px; font-size:1rem; }
+  .predict { background:#fffbeb; border-left:4px solid #b45309; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .reveal { margin:10px 0; }
+  .reveal summary { cursor:pointer; font-weight:600; color:var(--accent); }
+  .win { background:#f0fdf4; border-left:4px solid var(--ok); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .quiz { background:var(--accent-soft); border-radius:12px; padding:16px 20px; margin:16px 0; }
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:.9rem; background:#fff; }
+  th, td { text-align:left; padding:7px 11px; border:1px solid var(--line); }
+  th { background:var(--accent-soft); }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="lesson-tag">Lesson 0003 · ~75 minutes · Phase 1, C++ track begins</span>
+<h1>First C++, and the Cache Line You Can Measure</h1>
+<p class="goal"><strong>The one thing this lesson teaches:</strong> memory is delivered in fixed-size chunks called <em>cache lines</em>, so <em>how you walk through memory</em> matters as much as how much you read. You'll write your first C++ program, use it to experimentally discover your M4 Max's cache line size, and meet the concept that becomes CUDA's "memory coalescing" in month 2.</p>
+
+<h2>1 · Why C++ at all</h2>
+<p>Python tells a runtime what to do; C++ compiles to the actual machine instructions your CPU executes. Kernels — CUDA or Metal — are written in C++ dialects because at kernel level <em>you</em> decide every memory access. This track teaches the working subset CUDA needs (per <a href="https://www.learncpp.com/">learncpp.com</a> ch. 1–13), not the whole language.</p>
+
+<div class="step">
+<h3>Step 1 — Compile something</h3>
+<p>Your Mac ships clang. Check, then create and compile:</p>
+<pre><code>clang++ --version        # if missing: xcode-select --install</code></pre>
+<pre><code>// hello.cpp
+#include &lt;cstdio&gt;
+
+int main() {
+    int bytes_per_float = 4;
+    std::printf("a float is %d bytes\n", bytes_per_float);
+    return 0;
+}</code></pre>
+<pre><code>clang++ -O2 -std=c++17 hello.cpp -o hello && ./hello</code></pre>
+<p>Three things Python never showed you: <code>int bytes_per_float</code> declares a <em>typed</em> variable (the compiler must know sizes — types ARE memory layout here); <code>main</code> is the fixed entry point; <code>-O2</code> asks the optimizer to work hard — <strong>always benchmark with -O2</strong>, unoptimized C++ numbers are meaningless.</p>
+</div>
+
+<h2>2 · The mental model: memory arrives by the line, not by the byte</h2>
+<p>When your program reads one 4-byte float, the memory system doesn't fetch 4 bytes. It fetches the entire <strong>cache line</strong> containing it — a fixed chunk (64 or 128 bytes depending on the CPU) — into fast cache. Read the neighboring float next and it's already there, nearly free. Skip far ahead and you pay for a whole new line while using 4 bytes of it.</p>
+<p>Ask your machine what it claims, so the experiment has a hypothesis to test:</p>
+<pre><code>sysctl hw.cachelinesize</code></pre>
+
+<h2>3 · The experiment: discover the line size yourself</h2>
+<div class="step">
+<h3>Step 2 — stride.cpp</h3>
+<pre><code>// stride.cpp — time per element-touch as stride grows
+#include &lt;chrono&gt;
+#include &lt;cstdio&gt;
+#include &lt;vector&gt;
+
+int main() {
+    const size_t N = 1 &lt;&lt; 28;               // 268M floats = 1 GiB
+    std::vector&lt;float&gt; data(N, 1.0f);        // contiguous block of N floats
+
+    for (size_t stride = 1; stride &lt;= 128; stride *= 2) {
+        double sum = 0.0;
+        auto t0 = std::chrono::steady_clock::now();
+        for (size_t i = 0; i &lt; N; i += stride)
+            sum += data[i];
+        auto t1 = std::chrono::steady_clock::now();
+
+        double ns = std::chrono::duration&lt;double, std::nano&gt;(t1 - t0).count();
+        size_t touches = N / stride;
+        std::printf("stride %4zu (%5zu B apart) | %6.3f ns/touch | sum=%.0f\n",
+                    stride, stride * sizeof(float), ns / touches, sum);
+    }
+}</code></pre>
+<pre><code>clang++ -O2 -std=c++17 stride.cpp -o stride && ./stride</code></pre>
+<p>What it does: touches every <code>stride</code>-th float of a 1 GiB array. Each row does <em>fewer</em> touches, but each touch lands farther from the last. We print <code>sum</code> so the optimizer can't delete the loop (a real benchmarking discipline — dead code runs in 0 ns).</p>
+</div>
+
+<div class="predict">
+<strong>Predict before running:</strong> ns/touch at stride 1 vs stride 32 (= 128 bytes apart) — same, 2× worse, or ~10× worse? And after the knee, will doubling the stride again keep making each touch slower?
+</div>
+
+<div class="reveal"><details><summary>What you should see, and why</summary>
+<p>Time per touch climbs as stride grows — each touch shares less of its cache line with the previous one — then <strong>flattens at the stride where one touch = one new line</strong> (stride × 4 bytes ≥ line size). That knee IS your cache line size, measured. Compare it to <code>sysctl</code>'s claim. Past the knee, every touch misses regardless, so doubling stride barely changes ns/touch (until far bigger strides hit paging effects — month 2 territory).</p>
+<p>Bonus reading of the same numbers: at stride 1 you stream 1 GiB sequentially. Compute your single-core bandwidth: <code>4 bytes ÷ (ns per touch) GB/s</code>. It will land well below your 436 GB/s — one CPU core physically cannot drive the whole memory bus. Bandwidth is a <em>shared, per-engine</em> resource; the GPU number you measured in lesson 0002 needed thousands of parallel accesses in flight. Hold that thought — it's exactly why GPUs look the way they do.</p>
+</details></div>
+
+<h2>4 · The C++ you just used, minimally</h2>
+<table>
+<tr><th>Line</th><th>What it means</th><th>Why inference engineers care</th></tr>
+<tr><td><code>std::vector&lt;float&gt; data(N, 1.0f)</code></td><td>N floats in ONE contiguous heap block</td><td>Contiguity is the whole game — tensors are exactly this</td></tr>
+<tr><td><code>data[i]</code></td><td>"start address + i × 4 bytes" — pointer arithmetic in disguise</td><td>CUDA kernels index raw pointers the same way</td></tr>
+<tr><td><code>size_t</code></td><td>Unsigned integer type for sizes/indices</td><td>The default index type in kernel code</td></tr>
+<tr><td><code>auto t0 = steady_clock::now()</code></td><td><code>auto</code> = compiler infers the type; steady_clock = monotonic timer</td><td>Your CPU-side timing tool from now on</td></tr>
+<tr><td><code>const</code></td><td>Promise it won't change</td><td>Compilers optimize around promises; kernels are full of them</td></tr>
+</table>
+
+<h2>5 · Self-check</h2>
+<div class="quiz">
+<ol>
+<li>Your knee appeared at stride <em>k</em>. Write the cache line size formula and your measured value.</li>
+<li>Roofline vocabulary (lesson 0002): summing floats is 1 add per 4 bytes → AI = 0.25. Is this loop compute- or memory-bound, and does this experiment depend on that?</li>
+<li>A colleague benchmarks without <code>-O2</code> and without printing <code>sum</code>. Name both bugs.</li>
+<li>Transfer: a model stores its weight matrix row-by-row, but a kernel reads it column-by-column. What does this lesson predict?</li>
+</ol>
+<details><summary>Answers</summary>
+<ol>
+<li>line = k × sizeof(float) = k × 4 bytes. Most Apple Silicon reports 128 B (knee at stride 32) — trust your measurement.</li>
+<li>Deeply memory-bound (AI 0.25 vs ridge ~33). Yes, the experiment depends on it: because compute is negligible, ns/touch is a clean probe of pure memory behavior.</li>
+<li>Without -O2 you time the unoptimized interpreter-grade code; without using <code>sum</code> the optimizer may delete the loop entirely and you time nothing.</li>
+<li>Column reads are strided by the row length — every access pays for a full line and uses 4 bytes, so effective bandwidth collapses (often ~10–30×). Fixing exactly this via access-pattern changes is CUDA "coalescing," month 2's centerpiece.</li>
+</ol>
+</details>
+</div>
+
+<div class="win"><strong>Your win:</strong> you wrote, compiled, and ran C++ for the first time — and used it to measure a real microarchitectural constant of your machine. You now hold the third leg of the performance tripod: bandwidth (lesson 2's ceiling), arithmetic intensity (lesson 2's x-axis), and access pattern (today). Every kernel optimization you'll ever do manipulates one of these three.</div>
+
+<p class="footer"><strong>This week's parallel track:</strong> <a href="https://www.learncpp.com/">learncpp.com</a> chapters 1–4 (~30–45 min/day) — basics, variables, functions. Skim fast; you've now seen the "why" that makes those chapters land. Stuck on any compiler error or a weird timing? Paste it to your teaching agent — diagnosing is the fun part.<br><br>Open this lesson: <code>open ~/playground-ai/research/lessons/0003-first-cpp-cache-lines.html</code></p>
+
+</div>
+</body>
+</html>

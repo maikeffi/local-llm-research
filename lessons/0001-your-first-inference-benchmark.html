@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0001 · Your First Inference Benchmark</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --ok:#047857; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.6; }
+  .page { max-width:760px; margin:0 auto; padding:48px 28px 80px; }
+  .lesson-tag { font-size:.8rem; font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; }
+  h1 { font-size:1.7rem; margin:6px 0 4px; letter-spacing:-0.02em; }
+  .goal { color:var(--muted); margin-bottom:24px; }
+  h2 { font-size:1.15rem; margin:34px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--accent); }
+  p, li { font-size:.95rem; }
+  a { color:var(--accent); }
+  pre { background:#1e1e2e; color:#e6e6f0; padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:.85rem; line-height:1.5; }
+  code { font-family:"SF Mono",Menlo,monospace; }
+  p code, li code { background:#eef; color:var(--ink); padding:1px 5px; border-radius:4px; font-size:.85em; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:14px 0; }
+  .step h3 { margin:0 0 8px; font-size:1rem; }
+  .predict { background:#fffbeb; border-left:4px solid #b45309; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .reveal { margin:10px 0; }
+  .reveal summary { cursor:pointer; font-weight:600; color:var(--accent); }
+  .win { background:#f0fdf4; border-left:4px solid var(--ok); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .quiz { background:var(--accent-soft); border-radius:12px; padding:16px 20px; margin:16px 0; }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="lesson-tag">Lesson 0001 · ~45 minutes · Phase 1</span>
+<h1>Your First Inference Benchmark</h1>
+<p class="goal"><strong>The one thing this lesson teaches:</strong> LLM text generation is limited by <em>memory bandwidth</em>, not compute — and you can predict a model's speed with arithmetic before you ever run it. This is the foundational mental model of the entire job.</p>
+
+<h2>1 · Run a model and get your numbers</h2>
+
+<div class="step">
+<h3>Step 1 — Install MLX's LLM runner</h3>
+<pre><code>python3 -m venv ~/.venvs/infer && source ~/.venvs/infer/bin/activate
+pip install mlx-lm</code></pre>
+<p><a href="https://github.com/ml-explore/mlx-lm">mlx-lm</a> is Apple's framework for running LLMs natively on your M4 Max's GPU.</p>
+</div>
+
+<div class="step">
+<h3>Step 2 — Generate text and read the stats</h3>
+<pre><code>mlx_lm.generate \
+  --model mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --prompt "Explain why GPUs are good at matrix multiplication." \
+  --max-tokens 200</code></pre>
+<p>It downloads ~1.8 GB the first time. At the end MLX prints two numbers. Write them down:</p>
+<ul>
+<li><code>Prompt: ... tokens-per-sec</code> — the <strong>prefill</strong> speed (processing your input)</li>
+<li><code>Generation: ... tokens-per-sec</code> — the <strong>decode</strong> speed (producing output, one token at a time)</li>
+</ul>
+</div>
+
+<div class="predict">
+<strong>Predict before you peek:</strong> which number will be bigger, and roughly by how much — 2×? 10×? 50×? Commit to a guess before running.
+</div>
+
+<h2>2 · Why the two numbers are so different</h2>
+<p>Every generated token requires reading <strong>every weight of the model from memory</strong>. Your 4-bit 3B model is ~1.8 GB, so producing one token moves ~1.8 GB through the memory system. Prefill is different: all prompt tokens are processed <em>together in one pass</em>, so one trip through the weights is shared across many tokens.</p>
+<p>That's the fundamental asymmetry (<a href="https://kipp.ly/transformer-inference-arithmetic/">kipply's inference arithmetic</a>, <a href="https://horace.io/brrr_intro.html">Horace He's "Go Brrrr"</a>):</p>
+<ul>
+<li><strong>Prefill is compute-bound</strong> — limited by how fast the chip multiplies matrices.</li>
+<li><strong>Decode is memory-bandwidth-bound</strong> — limited by how fast weights stream from memory.</li>
+</ul>
+
+<h2>3 · Predict your machine's speed limit</h2>
+<div class="step">
+<h3>The napkin math</h3>
+<p>Your M4 Max has ~<strong>546 GB/s</strong> memory bandwidth. If every token needs one full pass over ~1.8 GB of weights:</p>
+<pre><code>ceiling ≈ bandwidth / model size
+        ≈ 546 GB/s ÷ 1.8 GB ≈ ~300 tokens/sec</code></pre>
+<p>Real systems hit 50–80% of this ceiling (KV cache reads, kernel overhead, non-weight memory traffic). So expect roughly <strong>150–240 tok/s</strong> decode.</p>
+</div>
+<div class="reveal"><details><summary>Check: was your measured decode speed within that band?</summary><p>If yes — you just did your first roofline-style analysis, the exact reasoning Nsight profiling formalizes later. If it was far off, tell the teaching agent your number; diagnosing the gap is a great follow-up session.</p></details></div>
+
+<h2>4 · Prove it with an experiment</h2>
+<div class="step">
+<h3>Run the 8-bit version of the same model</h3>
+<pre><code>mlx_lm.generate \
+  --model mlx-community/Llama-3.2-3B-Instruct-8bit \
+  --prompt "Explain why GPUs are good at matrix multiplication." \
+  --max-tokens 200</code></pre>
+<p>The 8-bit model is ~2× larger in bytes (~3.4 GB) but does the <em>same math</em>.</p>
+</div>
+<div class="predict"><strong>Predict first:</strong> if decode is truly bandwidth-bound, what should happen to generation tok/s when the weights double in size?</div>
+<div class="reveal"><details><summary>Reveal</summary><p>Decode speed should drop to roughly <strong>half</strong> — twice the bytes per token through the same pipe. If you observed ~½, you've experimentally confirmed decode is memory-bound. This is also why quantization speeds up decode: it's a <em>bandwidth</em> optimization, not a compute one — and why Moondream flags people who think quantization is the only lever.</p></details></div>
+
+<h2>5 · Quick self-check</h2>
+<div class="quiz">
+<ol>
+<li>A friend says "my GPU has huge TFLOPs, so generation will be fast." What's wrong with that reasoning for decode?</li>
+<li>You double the <em>prompt length</em>. Which number suffers more — prefill time or decode tok/s? Why?</li>
+<li>Estimate: decode ceiling for an ~8 GB model on your machine?</li>
+</ol>
+<details><summary>Answers</summary>
+<ol>
+<li>Decode is bandwidth-bound: TFLOPs sit idle while weights stream from memory. Bandwidth, not compute, sets the ceiling.</li>
+<li>Prefill time grows with prompt length (more tokens to crunch — compute-bound). Decode tok/s barely changes at first (weights dominate traffic), degrading slowly as the KV cache grows.</li>
+<li>≈ 546 / 8 ≈ 68 tok/s ceiling → ~40–55 tok/s realistic.</li>
+</ol>
+</details>
+</div>
+
+<div class="win"><strong>Your win:</strong> you measured real inference numbers on your own hardware, predicted them from first principles, and confirmed the prediction with an experiment. That predict → measure → explain loop is the day-to-day core of inference engineering.</div>
+
+<p class="footer">Stuck, surprised by a number, or curious to go deeper? Ask your teaching agent — open this workspace and just describe what you saw. Next lesson: reading your benchmark through the roofline model, then starting the C++ track.<br><br>Open this lesson anytime: <code>open ~/playground-ai/research/lessons/0001-your-first-inference-benchmark.html</code></p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inference Engineer — 6-Month Learning Path</title>
+<style>
+  :root {
+    --ink: #1a1a2e; --muted: #5c5c70; --accent: #4338ca; --accent-soft: #eef2ff;
+    --ok: #047857; --warn: #b45309; --line: #e5e7eb; --bg: #fafafa;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--bg); margin: 0; line-height: 1.55; }
+  .page { max-width: 880px; margin: 0 auto; padding: 48px 32px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .subtitle { color: var(--muted); margin-bottom: 28px; }
+  h2 { font-size: 1.25rem; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1.02rem; margin: 18px 0 6px; }
+  p, li { font-size: 0.95rem; }
+  a { color: var(--accent); }
+  .callout { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; font-size: 0.93rem; }
+  .phase { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; margin: 18px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .phase-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+  .phase-head h3 { margin: 0; font-size: 1.1rem; }
+  .badge { font-size: 0.75rem; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+  .outcome { background: #f0fdf4; border-left: 4px solid var(--ok); padding: 10px 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.9rem; }
+  .outcome strong { color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; background: #fff; }
+  th, td { text-align: left; padding: 8px 12px; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--accent-soft); }
+  code { background: #eef; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+  @media print { body { background: #fff; } .phase { box-shadow: none; break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Inference Engineer — 6-Month Learning Path</h1>
+<p class="subtitle">From zero GPU programming to measurable inference speedups on two platforms · anchored to the <a href="https://moondream.ai/about/careers/inference-engineer">Moondream Inference Engineer role</a> · 10–20 hrs/week · M4 Max local + cloud CUDA</p>
+
+<div class="callout">
+<strong>Operating principle:</strong> every week ends with a <em>number you measured yourself</em> (tokens/sec, GB/s, kernel ms). Reading without benchmarking doesn't count as progress. The role's own bar: <em>"You've made production inference workloads meaningfully faster, not just turned a benchmark green."</em>
+</div>
+
+<h2>The proficiency map — what the role actually requires</h2>
+<table>
+<tr><th>Topic area</th><th>What "proficient" means here</th><th>Covered in</th></tr>
+<tr><td>Performance mental models</td><td>Classify any workload as compute-, memory-, or overhead-bound; do roofline math on a napkin</td><td>Phase 1</td></tr>
+<tr><td>C++ (working subset)</td><td>Read/write the C++ that CUDA host + kernel code needs — pointers, memory, templates-lite</td><td>Phase 1–2</td></tr>
+<tr><td>GPU architecture &amp; CUDA</td><td>Threads/blocks/warps, shared memory, coalescing, occupancy, streams</td><td>Phase 2</td></tr>
+<tr><td>Profiling</td><td>Drive Nsight Compute/Systems; explain a kernel's bottleneck from counters, not vibes</td><td>Phase 3</td></tr>
+<tr><td>Kernel optimization &amp; fusion</td><td>Take a naive kernel to near-library speed; know when and how to fuse ops (the FlashAttention idea)</td><td>Phase 3–4</td></tr>
+<tr><td>Transformer/VLM inference internals</td><td>Prefill vs decode, KV cache, attention variants, vision encoder + projector pipeline</td><td>Phase 4</td></tr>
+<tr><td>Serving systems</td><td>Continuous batching, PagedAttention, speculative decoding — read vLLM/SGLang source, not just docs</td><td>Phase 5</td></tr>
+<tr><td>Multi-platform backends</td><td>Ship the same model fast on ≥2 targets (CUDA + Apple Silicon/MLX/Core ML); know XLA/TensorRT at concept level</td><td>Phase 5–6</td></tr>
+<tr><td>Quantization (as one tool)</td><td>INT8/INT4/FP8 trade-offs, when it helps and when it masks real problems — never the only lever</td><td>Phase 4</td></tr>
+</table>
+
+<h2>The six phases</h2>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 1 · Performance Foundations (on your Mac)</h3><span class="badge">Month 1 · ~60 hrs</span></div>
+<ul>
+<li><strong>Course A — The performance mental model:</strong> <a href="https://horace.io/brrr_intro.html">Horace He's "Go Brrrr"</a> + <a href="https://kipp.ly/transformer-inference-arithmetic/">kipply's Transformer Inference Arithmetic</a>. Benchmark LLMs locally with <a href="https://github.com/ml-explore/mlx-lm">mlx-lm</a> on the M4 Max (lesson 0001 starts here).</li>
+<li><strong>Course B — C++ crash course:</strong> <a href="https://www.learncpp.com/">learncpp.com</a> chapters 1–13 only (basics → pointers → functions). 30–45 min/day; stop there.</li>
+<li><strong>Course C — First parallel thinking:</strong> PMPP chapters 1–3 (read-only, concepts) + <a href="https://leetgpu.com/">LeetGPU</a> first easy challenges in-browser.</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> You can predict a model's decode tokens/sec from memory bandwidth before running it, verify within 2× on your M4 Max, and explain the prefill/decode asymmetry. You can read simple C++/CUDA code without panic.</div>
+</div>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 2 · Core CUDA</h3><span class="badge">Month 2 · ~65 hrs</span></div>
+<ul>
+<li><strong>Course A — PMPP core:</strong> chapters 2–6 with every exercise coded (Colab T4 free tier is enough). Topics: thread hierarchy, global/shared memory, tiling, coalescing.</li>
+<li><strong>Course B — GPU MODE lectures 1–8:</strong> one per week alongside PMPP; <a href="https://christianjmills.com/posts/cuda-mode-notes/lecture-008/">Lecture 8 (performance checklist)</a> is the keystone. Join the <a href="https://discord.gg/gpumode">GPU MODE Discord</a> this month and lurk the kernel channels.</li>
+<li><strong>Course C — Kernel reps:</strong> 3–4 LeetGPU problems/week: vector ops → reductions → softmax → tiled matmul.</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> You can write a tiled shared-memory matmul from scratch, explain why it beats the naive version (memory traffic math), and identify uncoalesced access in someone else's kernel.</div>
+</div>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 3 · Profiling &amp; the Matmul Gauntlet</h3><span class="badge">Month 3 · ~65 hrs</span></div>
+<ul>
+<li><strong>Course A — Nsight bootcamp:</strong> rent a real GPU a few hours/week (Lambda/RunPod, ~$0.50–2/hr) since Colab can't run Nsight Compute well. Profile every Phase-2 kernel; learn to read SOL, occupancy, and memory charts.</li>
+<li><strong>Course B — The SGEMM worklog:</strong> reproduce <a href="https://siboehm.com/articles/22/CUDA-MMM">Simon Boehm's matmul optimization</a> kernel-by-kernel (naive → coalesced → tiled → vectorized → warptiled). Keep your own written worklog with Nsight screenshots.</li>
+<li><strong>Course C — Roofline discipline:</strong> PMPP performance chapters; for each kernel state predicted vs achieved % of peak.</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> A public blog post / repo: "Optimizing SGEMM from 2% to ~70% of cuBLAS" with profiler evidence at each step. This is portfolio artifact #1 and the single strongest interview asset at this stage.</div>
+</div>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 4 · Inference Internals &amp; Fusion</h3><span class="badge">Month 4 · ~65 hrs</span></div>
+<ul>
+<li><strong>Course A — Build a tiny inference engine:</strong> implement GPT-2-class decoding in plain PyTorch/MLX: KV cache, greedy/temperature sampling, batching. Measure how each addition changes tokens/sec.</li>
+<li><strong>Course B — Attention &amp; fusion:</strong> read the <a href="https://arxiv.org/abs/2205.14135">FlashAttention paper</a> for the IO-aware idea; work through <a href="https://triton-lang.org/main/getting-started/tutorials/index.html">Triton tutorials</a> (vector add → softmax → fused softmax → matmul) and write one fused kernel of your own (e.g. RMSNorm + residual).</li>
+<li><strong>Course C — Quantization, honestly:</strong> <a href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">Lilian Weng's survey</a> + hands-on INT4/INT8 with mlx-lm. Frame it as bandwidth reduction — measure why 4-bit ≈ 2× decode speed, and what it costs.</li>
+<li><strong>Course D — VLM specifics:</strong> run <a href="https://github.com/vikhyat/moondream">Moondream</a> locally via mlx-vlm; profile where time goes (vision encoder vs projector vs text decode).</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> You can draw the full latency budget of a VLM request, have written a working fused Triton kernel with before/after numbers, and can argue when quantization is the wrong answer — the exact anti-pattern Moondream screens for.</div>
+</div>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 5 · Serving Systems &amp; Platform Breadth</h3><span class="badge">Month 5 · ~65 hrs</span></div>
+<ul>
+<li><strong>Course A — vLLM from the inside:</strong> read the <a href="https://docs.vllm.ai/">architecture docs</a> then source: scheduler, PagedAttention block manager, continuous batching. Run load tests; chart latency vs throughput vs batch size.</li>
+<li><strong>Course B — Apple Silicon deep dive:</strong> custom Metal kernels via MLX's extension API on your M4 Max; benchmark MLX vs llama.cpp on identical models; skim Core ML conversion for one small model. This is your second platform — the role explicitly requires multi-target thinking.</li>
+<li><strong>Course C — One vendor toolchain (concept level):</strong> TensorRT-LLM quickstart on a rented GPU; understand engines, graph optimization, and where it beats hand-rolled kernels. XLA/Neuron stay at reading level for interviews.</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> You can explain PagedAttention from the code (not the blog post), have shipped one custom Metal kernel, and can compare the same model's performance across CUDA and Apple Silicon with real numbers — portfolio artifact #2.</div>
+</div>
+
+<div class="phase">
+<div class="phase-head"><h3>Phase 6 · Capstone &amp; Going Public</h3><span class="badge">Month 6 · ~60 hrs</span></div>
+<ul>
+<li><strong>Capstone:</strong> pick ONE real optimization target and make it meaningfully faster, end to end. Best options: (a) speed up Moondream inference on Apple Silicon (mlx-vlm path) with profiling evidence, or (b) contribute a measured kernel/perf improvement upstream to mlx-lm, mlx-vlm, or llama.cpp.</li>
+<li><strong>Write-up:</strong> a thorough public post — baseline, profile, hypothesis, fix, numbers, what didn't work. Honest negative results included.</li>
+<li><strong>Community:</strong> post the worklog in GPU MODE Discord and r/LocalLLaMA; enter a GPU MODE kernel competition if one is running; iterate on feedback.</li>
+<li><strong>Interview prep:</strong> rehearse the spine questions — roofline math, why decode is memory-bound, how FlashAttention works, KV cache sizing, fusion trade-offs ("performance vs code clarity" is literally in the job description).</li>
+</ul>
+<div class="outcome"><strong>Outcome:</strong> A portfolio that answers the role's first screen — "made a real inference workload meaningfully faster" — with public, reproducible evidence on two platforms, plus a community footprint where these companies actually recruit.</div>
+</div>
+
+<h2>Weekly rhythm (15 hrs reference week)</h2>
+<table>
+<tr><th>Block</th><th>Hours</th><th>What</th></tr>
+<tr><td>Structured study</td><td>5</td><td>Current phase's book chapters / lectures / paper</td></tr>
+<tr><td>Hands-on coding</td><td>7</td><td>Kernels, benchmarks, the running project — this is the part that compounds</td></tr>
+<tr><td>Write + community</td><td>2</td><td>Worklog notes, Discord, one explainer paragraph in your own words</td></tr>
+<tr><td>Review with your teacher</td><td>1</td><td>Bring stuck points and benchmark surprises back to the teaching agent</td></tr>
+</table>
+
+<div class="callout">
+<strong>Honest calibration:</strong> Moondream's posting describes a senior profile (production speedups already shipped). Six months from zero makes you a strong <em>junior</em> inference engineer with rare public evidence — competitive for junior/mid inference and ML-performance roles, and on a 12–18 month trajectory to roles like Moondream's. The portfolio artifacts are what compress that timeline.
+</div>
+
+<p class="footer">Workspace: <code>~/playground-ai/research</code> · Lessons in <code>./lessons/</code> · Ask the teaching agent (<code>/teach</code>) whenever anything is unclear — it knows this plan and your progress. Generated 2026-06-10.</p>
+
+</div>
+</body>
+</html>

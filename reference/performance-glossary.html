@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inference Performance Glossary</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.55; }
+  .page { max-width:820px; margin:0 auto; padding:44px 28px 70px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; letter-spacing:-0.02em; }
+  .subtitle { color:var(--muted); margin-bottom:22px; font-size:.92rem; }
+  h2 { font-size:1.05rem; margin:28px 0 8px; padding-bottom:4px; border-bottom:2px solid var(--accent); }
+  dl { margin:0; }
+  dt { font-weight:600; margin-top:12px; }
+  dt code { font-family:"SF Mono",Menlo,monospace; background:#eef; padding:1px 6px; border-radius:4px; font-size:.85em; }
+  dd { margin:2px 0 0 0; font-size:.92rem; color:#333346; }
+  .formula { background:#1e1e2e; color:#e6e6f0; padding:10px 14px; border-radius:8px; font-family:"SF Mono",Menlo,monospace; font-size:.84rem; margin:8px 0; }
+  .footer { margin-top:40px; padding-top:12px; border-top:1px solid var(--line); color:var(--muted); font-size:.84rem; }
+  @media print { body { background:#fff; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Inference Performance Glossary</h1>
+<p class="subtitle">Canonical vocabulary for this workspace · grows with each lesson · terms introduced in lessons 0001–0002 so far</p>
+
+<h2>Core quantities</h2>
+<dl>
+<dt>FLOPs / FLOP/s</dt>
+<dd>Floating-point operations (a count) vs floating-point operations per second (a rate). A matmul of (M×K)·(K×N) costs <code>2·M·K·N</code> FLOPs — the 2 is one multiply + one add.</dd>
+<dt>Memory bandwidth (GB/s)</dt>
+<dd>How fast bytes stream between memory and compute units. Your M4 Max: 546 GB/s nominal; your measured number from lesson 0002 is the one to use.</dd>
+<dt>Arithmetic intensity (AI)</dt>
+<dd>FLOPs performed per byte moved. The single number that locates a workload on the roofline.
+<div class="formula">AI = FLOPs / bytes moved&nbsp;&nbsp;&nbsp;(FLOPs per byte)</div></dd>
+<dt>Tokens/sec (tok/s)</dt>
+<dd>The user-facing inference metric. Always specify which: prompt (prefill) tok/s or generation (decode) tok/s — they differ by an order of magnitude or more.</dd>
+</dl>
+
+<h2>The roofline model</h2>
+<dl>
+<dt>Roofline</dt>
+<dd>Chart of achievable FLOP/s vs arithmetic intensity. Two ceilings: a slanted line (bandwidth × AI) and a flat line (peak compute). A workload's AI determines which ceiling caps it.</dd>
+<dt>Ridge point</dt>
+<dd>The AI where the two ceilings meet. Below: memory-bound. Above: compute-bound.
+<div class="formula">ridge = peak FLOP/s ÷ peak bytes/s&nbsp;&nbsp;&nbsp;(FLOPs per byte)</div></dd>
+<dt>Memory-bound (bandwidth-bound)</dt>
+<dd>Speed limited by byte movement; compute units idle. Fix by moving fewer bytes (quantization, fusion) or reusing each byte more (batching, tiling). More TFLOPs won't help.</dd>
+<dt>Compute-bound</dt>
+<dd>Speed limited by math throughput; the memory system keeps up. Fix with faster math (tensor cores, lower precision) or fewer FLOPs (better algorithms).</dd>
+<dt>Overhead-bound</dt>
+<dd>Limited by neither — time goes to launch latency, Python, framework bookkeeping. Common for tiny kernels; fix with fusion, graphs, bigger batches. (Horace He's third regime; becomes central in month 4.)</dd>
+</dl>
+
+<h2>LLM inference anatomy</h2>
+<dl>
+<dt>Prefill</dt>
+<dd>Processing the whole prompt in one parallel pass. Matrix–matrix work, high AI → typically compute-bound. Determines time-to-first-token.</dd>
+<dt>Decode</dt>
+<dd>Generating output one token at a time, each requiring a full pass over the weights. Matrix–vector work, AI ≈ 1–4 → memory-bound. Determines generation tok/s.</dd>
+<dt>KV cache</dt>
+<dd>Stored attention keys/values for all previous tokens, so each new token attends without recomputation. Grows linearly with context length; its reads are extra memory traffic that slowly erodes decode speed.</dd>
+<dt>Quantization</dt>
+<dd>Storing weights in fewer bits (8/4-bit vs fp16). In roofline terms: a <em>bandwidth</em> optimization — fewer bytes per token, so memory-bound decode speeds up roughly proportionally. One tool among many, never the whole strategy.</dd>
+<dt>Batching</dt>
+<dd>Decoding several requests together so each weight byte read serves the whole batch — multiplies AI by batch size. Past <code>batch ≈ ridge ÷ AI</code>, decode turns compute-bound. Foundation of serving systems (month 5).</dd>
+</dl>
+
+<h2>Measurement discipline</h2>
+<dl>
+<dt>Warmup</dt>
+<dd>Discarded initial iterations that absorb one-time costs (compilation, allocation, cache fill) so timings reflect steady state.</dd>
+<dt>Lazy evaluation / synchronization</dt>
+<dd>MLX builds graphs lazily; CUDA launches kernels asynchronously. Timing without forcing completion (<code>mx.eval</code>, <code>cudaDeviceSynchronize</code>) measures bookkeeping, not work. The classic benchmarking bug.</dd>
+<dt>Nominal vs achieved</dt>
+<dd>Spec-sheet peak vs what your benchmark sustains. Kernels are judged as % of achievable peak, not marketing peak.</dd>
+</dl>
+
+<p class="footer">Open anytime: <code>open ~/playground-ai/research/reference/performance-glossary.html</code> · Terms used in lessons always match this glossary; flag any drift to the teaching agent.</p>
+
+</div>
+</body>
+</html>
