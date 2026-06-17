@@ -138,8 +138,8 @@ int main() {
 </div>
 
 <div class="step">
-<h3>Surprise 2 — knee at stride 128 (512 B), not 32 (128 B)</h3>
-<p>The textbook knee for a 128 B line is stride 32. Landing at ~128 means the <strong>hardware prefetcher</strong> ran ahead of the sequential pattern, hiding line-fetch cost until the stride outran its window (~512 B). A microbenchmark measures the whole subsystem — cache + prefetcher + TLB — not one clean constant.</p>
+<h3>Surprise 2 — the cache line is cleanly 128 B (knee at stride 32)</h3>
+<p>The full stride table makes it unambiguous: times are flat (~0.5 ns) through stride 16, then jump 4.3× to ~2.2 ns at <strong>stride 32 = 128 B apart</strong>. That cliff IS the 128-byte cache line — the textbook Apple Silicon result. (An earlier terse reading suggested the knee was at 512 B; the complete table corrected it. The prefetcher still shows up — it keeps the pre-cliff rows cheap and makes the post-cliff rise gradual — but it does not hide the line size here.) Lesson 0004 decodes this table row by row.</p>
 </div>
 
 <div class="step">

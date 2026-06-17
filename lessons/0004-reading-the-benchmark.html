@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0004 · Reading Your Benchmark — ns, Strides, and Parallel Accumulators</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --ok:#047857; --line:#e5e7eb; --warn:#b45309; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.6; }
+  .page { max-width:760px; margin:0 auto; padding:48px 28px 80px; }
+  .lesson-tag { font-size:.8rem; font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; }
+  h1 { font-size:1.7rem; margin:6px 0 4px; letter-spacing:-0.02em; }
+  .goal { color:var(--muted); margin-bottom:24px; }
+  h2 { font-size:1.15rem; margin:34px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--accent); }
+  p, li { font-size:.95rem; }
+  a { color:var(--accent); }
+  pre { background:#1e1e2e; color:#e6e6f0; padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:.82rem; line-height:1.55; }
+  .ann { color:#8a8aa0; }
+  code { font-family:"SF Mono",Menlo,monospace; }
+  p code, li code, td code { background:#eef; color:var(--ink); padding:1px 5px; border-radius:4px; font-size:.85em; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:14px 0; }
+  .step h3 { margin:0 0 8px; font-size:1rem; }
+  .predict { background:#fffbeb; border-left:4px solid var(--warn); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .reveal { margin:10px 0; }
+  .reveal summary { cursor:pointer; font-weight:600; color:var(--accent); }
+  .win { background:#f0fdf4; border-left:4px solid var(--ok); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .quiz { background:var(--accent-soft); border-radius:12px; padding:16px 20px; margin:16px 0; }
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:.88rem; background:#fff; }
+  th, td { text-align:left; padding:6px 10px; border:1px solid var(--line); }
+  th { background:var(--accent-soft); }
+  .hot { background:#fef2f2; }
+  .cool { background:#f0fdf4; }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="lesson-tag">Lesson 0004 · ~60 minutes · Phase 1, C++ track</span>
+<h1>Reading Your Benchmark: ns, Strides &amp; Parallel Accumulators</h1>
+<p class="goal"><strong>The one thing this lesson teaches:</strong> how to <em>read</em> a memory benchmark line by line — what a nanosecond and a stride actually are, what every line of the C++ did, and why a "parallel accumulator" rewrite speeds things up in one regime but not another. The deep takeaway: an optimization only helps where it attacks the <em>binding</em> bottleneck.</p>
+
+<h2>1 · What is a nanosecond (ns)?</h2>
+<p>A nanosecond is one <strong>billionth</strong> of a second: <code>1 ns = 0.000000001 s = 10⁻⁹ s</code>. It's the natural unit for "how long did one tiny operation take," because modern hardware operates at this scale:</p>
+<table>
+<tr><th>Event</th><th>Roughly</th></tr>
+<tr><td>One M4 P-core clock tick (~4.5 GHz)</td><td>~0.22 ns</td></tr>
+<tr><td>Reading a value already in L1 cache</td><td>~1 ns</td></tr>
+<tr><td>Reading a value that misses all caches (DRAM)</td><td>~80–100 ns</td></tr>
+<tr><td>Light traveling across your desk</td><td>~1 ns per 30 cm</td></tr>
+</table>
+<p><strong>"ns/touch"</strong> in your output = the average nanoseconds spent per element the loop accessed. Lower is faster. It's a <em>per-operation</em> cost, which is what lets you compare rows that did different amounts of work.</p>
+
+<h2>2 · What is a stride?</h2>
+<p>A <strong>stride</strong> is the gap between successive accesses, measured in elements. Walking an array:</p>
+<pre><code>stride 1:  index 0, 1, 2, 3, 4, ...      <span class="ann">// every element (consecutive)</span>
+stride 4:  index 0, 4, 8, 12, ...        <span class="ann">// every 4th element</span>
+stride 32: index 0, 32, 64, 96, ...      <span class="ann">// every 32nd element</span></code></pre>
+<p>Since a <code>float</code> is 4 bytes, "stride 32" means each access lands <code>32 × 4 = 128 bytes</code> past the last — that's the "B apart" column. We <em>sweep</em> the stride (doubling it each row) to discover how far apart accesses have to be before the cache stops helping us. That distance reveals the cache line size.</p>
+
+<h2>3 · The original code, line by line</h2>
+<pre><code>#include &lt;chrono&gt;     <span class="ann">// timing tools (clocks, durations)</span>
+#include &lt;cstdio&gt;     <span class="ann">// std::printf for output</span>
+#include &lt;vector&gt;     <span class="ann">// std::vector, a growable array</span>
+
+int main() {
+    const size_t N = 1 &lt;&lt; 28;            <span class="ann">// 1<<28 = 2^28 = 268,435,456 floats (1 GiB)</span>
+    std::vector&lt;float&gt; data(N, 1.0f);    <span class="ann">// one contiguous block; every element = 1.0</span>
+
+    for (size_t stride = 1; stride &lt;= 128; stride *= 2) {   <span class="ann">// 1,2,4,...,128</span>
+        double sum = 0.0;
+        auto t0 = std::chrono::steady_clock::now();         <span class="ann">// start the stopwatch</span>
+        for (size_t i = 0; i &lt; N; i += stride)              <span class="ann">// touch every stride-th float</span>
+            sum += data[i];                                 <span class="ann">// read it, add to sum</span>
+        auto t1 = std::chrono::steady_clock::now();         <span class="ann">// stop the stopwatch</span>
+
+        double ns = std::chrono::duration&lt;double, std::nano&gt;(t1 - t0).count();
+        size_t touches = N / stride;                        <span class="ann">// how many elements we read</span>
+        std::printf("stride %4zu (%5zu B apart) | %6.3f ns/touch | sum=%.0f\n",
+                    stride, stride * sizeof(float), ns / touches, sum);
+    }
+}</code></pre>
+<div class="step">
+<h3>The pieces that matter</h3>
+<ul>
+<li><code>1 &lt;&lt; 28</code> — a <em>bit shift</em>: take 1 and move it 28 binary places left = 2²⁸. A common C++ idiom for "a power-of-two size."</li>
+<li><code>size_t</code> — an unsigned integer type sized to hold any array index on your machine (64-bit here). The standard type for sizes and indices.</li>
+<li><code>std::vector&lt;float&gt; data(N, 1.0f)</code> — allocates N floats in <em>one contiguous run of memory</em> and fills them with 1.0. Contiguity is the whole point: it's what makes strides meaningful.</li>
+<li><code>i += stride</code> — the inner loop's step. This single line is the experiment.</li>
+<li><code>steady_clock::now()</code> — a monotonic timer; subtract two readings to get elapsed time. <code>duration&lt;double, std::nano&gt;</code> converts that to nanoseconds.</li>
+<li><code>ns / touches</code> — normalize: total time ÷ number of accesses = ns per touch. Essential, because each row does a different number of touches.</li>
+</ul>
+</div>
+<div class="reveal"><details><summary>Why the <code>sum</code> column is a built-in correctness check</summary>
+<p>Every element is 1.0, so summing <em>k</em> touches must give exactly <em>k</em>. Your stride-1 row: <code>sum = 268435456 = N</code>. Stride 2: <code>134217728 = N/2</code>. Each row's sum equals its touch count — proof the loop ran correctly <em>and</em> that the optimizer didn't silently delete it. Printing a result you can verify is a benchmarking habit worth keeping forever.</p>
+</details></div>
+
+<h2>4 · Your results, decoded</h2>
+<table>
+<tr><th>stride</th><th>bytes apart</th><th>ns/touch</th><th>regime</th></tr>
+<tr class="cool"><td>1</td><td>4</td><td>0.522</td><td rowspan="5">flat — cache &amp; prefetcher keep up; loop limited by the FP add chain</td></tr>
+<tr class="cool"><td>2</td><td>8</td><td>0.566</td></tr>
+<tr class="cool"><td>4</td><td>16</td><td>0.567</td></tr>
+<tr class="cool"><td>8</td><td>32</td><td>0.572</td></tr>
+<tr class="cool"><td>16</td><td>64</td><td>0.662</td></tr>
+<tr class="hot"><td><strong>32</strong></td><td><strong>128</strong></td><td><strong>2.245</strong></td><td rowspan="3">the cliff — one touch per cache line; every touch forces a fresh fetch</td></tr>
+<tr class="hot"><td>64</td><td>256</td><td>2.558</td></tr>
+<tr class="hot"><td>128</td><td>512</td><td>2.839</td></tr>
+</table>
+<p>The story in one sentence: <strong>your cache line is 128 bytes.</strong> Up to stride 16 (64 B apart), multiple of your touches still land inside the same 128-byte line that was already fetched — cheap. At stride 32 (128 B apart) each touch lands in its <em>own</em> line, so every single touch pays for a 128-byte fetch to use just 4 bytes — a <strong>4.3× jump</strong>. Beyond that it creeps up as the prefetcher and TLB lose effectiveness.</p>
+<div class="reveal"><details><summary>The hidden waste at stride 32+</summary>
+<p>At 2.245 ns/touch you move 128 bytes to use 4. Bytes actually moved: <code>128 B ÷ 2.245 ns ≈ 57 GB/s</code> — but <em>useful</em> throughput is <code>4 B ÷ 2.245 ns ≈ 1.8 GB/s</code>. You're wasting ~97% of the bandwidth you're paying for. Eliminating exactly this waste — making every byte fetched a byte used — is what "memory coalescing" means on a GPU (month 2).</p>
+</details></div>
+
+<h2>5 · The merged code: naive vs parallel, at every stride</h2>
+<p>This version times <em>two</em> ways of summing the same elements at each stride, so you can compare them directly:</p>
+<pre><code>#include &lt;chrono&gt;
+#include &lt;cstdio&gt;
+#include &lt;vector&gt;
+
+using clk = std::chrono::steady_clock;
+static double ns_per(double ns, size_t touches) { return ns / touches; }
+
+<span class="ann">// ONE accumulator: each add waits for the previous one (a serial chain)</span>
+static double time_naive(const std::vector&lt;float&gt;&amp; d, size_t stride) {
+    const size_t N = d.size();
+    double sum = 0.0;
+    auto t0 = clk::now();
+    for (size_t i = 0; i &lt; N; i += stride) sum += d[i];
+    auto t1 = clk::now();
+    volatile double sink = sum; (void)sink;          <span class="ann">// keep the optimizer honest</span>
+    return ns_per(std::chrono::duration&lt;double,std::nano&gt;(t1-t0).count(), N/stride);
+}
+
+<span class="ann">// FOUR accumulators: four independent chains the CPU can overlap</span>
+static double time_parallel(const std::vector&lt;float&gt;&amp; d, size_t stride) {
+    const size_t N = d.size();
+    float s0=0, s1=0, s2=0, s3=0;
+    const size_t step = stride * 4;
+    auto t0 = clk::now();
+    size_t i = 0;
+    for (; i + 3*stride &lt; N; i += step) {            <span class="ann">// same indices as naive...</span>
+        s0 += d[i];            s1 += d[i + stride];
+        s2 += d[i + 2*stride]; s3 += d[i + 3*stride]; <span class="ann">// ...just 4 separate sums</span>
+    }
+    for (; i &lt; N; i += stride) s0 += d[i];           <span class="ann">// leftover tail</span>
+    auto t1 = clk::now();
+    volatile double sink = double(s0)+s1+s2+s3; (void)sink;
+    return ns_per(std::chrono::duration&lt;double,std::nano&gt;(t1-t0).count(), N/stride);
+}
+
+int main() {
+    const size_t N = 1 &lt;&lt; 28;
+    std::vector&lt;float&gt; data(N, 1.0f);
+    std::printf("stride | bytes |  naive |    par | speedup\n");
+    for (size_t stride = 1; stride &lt;= 128; stride *= 2) {
+        time_naive(data, stride);                    <span class="ann">// warmup (discarded)</span>
+        double a = time_naive(data, stride);
+        double b = time_parallel(data, stride);
+        std::printf("%6zu |%5zu B | %5.3f | %5.3f | %5.2fx\n",
+                    stride, stride*sizeof(float), a, b, a/b);
+    }
+}</code></pre>
+<pre><code>clang++ -O2 -std=c++17 stride2.cpp -o stride2 && ./stride2</code></pre>
+
+<div class="step">
+<h3>What actually changed, and why it's a fair test</h3>
+<p>Both functions touch the <em>exact same elements</em> in the same order — index 0, stride, 2·stride, 3·stride, 4·stride, … The <strong>only</strong> difference is the number of running totals:</p>
+<ul>
+<li><strong>Naive:</strong> one <code>sum</code>. Add #2 cannot start until add #1 finishes — a single chain. The CPU is forced to wait ~3 cycles (FP-add latency) per element, even though it could do more.</li>
+<li><strong>Parallel:</strong> four sums (<code>s0..s3</code>) that don't depend on each other, so the CPU's out-of-order engine runs them at the same time. Same work, four lanes instead of one.</li>
+</ul>
+<p>This trick has a name you'll meet again: exposing <strong>instruction-level parallelism (ILP)</strong>. (Note: clang won't do it for you on floats — reordering <code>a+b+c</code> can change rounding, so the compiler leaves your serial chain alone unless you rewrite it.)</p>
+</div>
+
+<div class="predict">
+<strong>Predict before you run.</strong> The parallel version breaks the FP-add chain. In which rows will it help most?
+<br>(a) the flat rows (stride 1–16), (b) the cliff rows (stride 32–128), or (c) equally everywhere?
+</div>
+
+<div class="reveal"><details><summary>Reveal — and the deep lesson</summary>
+<p><strong>(a) the flat rows.</strong> There the FP-add chain was the bottleneck (~0.5 ns ≈ 2.4 cycles, pure compute latency), so adding lanes should drop stride-1 toward ~0.15–0.25 ns — a real 2–3× win. In the cliff rows, the bottleneck is the 128-byte fetch per touch; the add chain is already hidden under a ~2.2 ns memory wait, so four accumulators barely move the number (~1.0–1.2×).</p>
+<p><strong>This is the whole point of the lesson:</strong> the same optimization is a big win or a no-op depending on <em>which constraint is binding</em>. Speeding up compute does nothing when you're memory-bound; reducing memory traffic does nothing when you're compute-bound. Every hour you'll ever spend optimizing inference starts with the question you just answered experimentally: <em>what is actually holding this back right now?</em></p>
+</details></div>
+
+<h2>6 · Why this matters for your future</h2>
+<ul>
+<li><strong>This IS GPU coalescing, previewed.</strong> On a GPU, the 32 threads of a "warp" read memory together. If they read consecutive addresses (the stride-1 case), one fetch serves all 32 — fast. If they read scattered addresses (the stride-32 case), the hardware issues many fetches — slow. Uncoalesced access is the #1 beginner CUDA performance bug, and you've now <em>felt</em> it on your own CPU.</li>
+<li><strong>The flat-then-cliff shape is universal.</strong> You'll see the same curve crossing every boundary of the memory hierarchy: registers → L1 → L2 → DRAM on a CPU, and registers → shared memory → global memory on a GPU. Recognizing the shape tells you which level you just fell out of.</li>
+<li><strong>Bottleneck-first thinking is the job.</strong> Profilers (Nsight, month 3) exist to answer "what's binding?" automatically. You're learning to answer it by hand first, which is why the profiler output will mean something to you.</li>
+<li><strong>Benchmarking hygiene transfers verbatim:</strong> warm up, compile with <code>-O2</code>, defeat dead-code elimination, normalize to per-operation cost, print a verifiable result. You'll use every one of these on GPU kernels unchanged.</li>
+</ul>
+
+<h2>7 · Self-check</h2>
+<div class="quiz">
+<ol>
+<li>In your own words: why is "ns/touch" a fairer comparison than total loop time across the rows?</li>
+<li>Your cliff is at stride 32 = 128 B. If a friend's machine cliffs at stride 16, what's their cache line size?</li>
+<li>You run the merged code and stride-1 speedup is 2.6×, but stride-64 speedup is 1.05×. Explain both in one sentence each.</li>
+<li>Transfer: a GPU kernel where neighboring threads read array elements 1024 apart — fast or slow, and which row of your table is the analogy?</li>
+</ol>
+<details><summary>Answers</summary>
+<ol>
+<li>Each row touches a different number of elements (N/stride), so total time isn't comparable; dividing by touches gives the cost of one access, which is the thing we're actually probing.</li>
+<li>16 × 4 B = 64-byte cache line (typical of many x86 CPUs).</li>
+<li>Stride-1 was compute/latency-bound, so breaking the FP chain helped a lot; stride-64 was memory-bound (one fetch per touch), so more accumulators couldn't help — the wait was for memory, not arithmetic.</li>
+<li>Slow — scattered reads, one fetch per thread, ~97% wasted bandwidth. It's the stride-32+ cliff rows. The fix is the GPU version of "make threads read consecutively" = coalescing.</li>
+</ol>
+</details>
+</div>
+
+<div class="win"><strong>Your win:</strong> you can now read a memory benchmark like a practitioner — you know what a ns and a stride are, what every line of the code does, how to spot the cache-line cliff in raw numbers, and why an optimization's value depends entirely on which bottleneck is binding. That last idea is the spine of the entire profession.</div>
+
+<p class="footer">Run the merged code (<code>stride2.cpp</code>) and bring back your <em>speedup</em> column — especially stride-1 vs stride-64. That single comparison closes the loop we opened in lesson 0003. Anything unclear in the C++? Paste it to your teaching agent.<br><br>Open this lesson: <code>open ~/playground-ai/research/lessons/0004-reading-the-benchmark.html</code></p>
+
+</div>
+</body>
+</html>
