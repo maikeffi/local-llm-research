@@ -9,7 +9,7 @@ Key reasoning surfaced in session:
 
 **Correction (full table, session 2026-06-17):** earlier "knee at 512 B / prefetcher masking" was wrong — based on a terse first message. The complete stride sweep shows flat ~0.5 ns through stride 16, then a 4.3× cliff at stride 32 (128 B): the cache line is cleanly **128 bytes**, the textbook result. Prefetcher still explains the cheap pre-cliff rows and the gradual post-cliff creep, but does not hide the line size. Lesson 0003 Surprise 2 patched accordingly.
 
-**Status:** open loop — user paused to consolidate fundamentals (asked what ns/stride/the code mean) before running the 4-accumulator variant. Produced lesson 0004 (line-by-line decode + merged naive-vs-parallel benchmark). Still need the user's speedup column (predict: big win at stride 1, ~no win at stride 64) to treat "separate compute vs memory bottlenecks" as demonstrated, not just explained.
+**Status:** CLOSED — see [[0004-bottleneck-attribution-demonstrated]]. User ran the merged benchmark; results confirmed the prediction (3.2× at stride 1, 1.00× at stride 32+) with an even richer gradient. Competency is now demonstrated, not just explained.
 
 **Implications**
 - Lesson 0003 patched (Section 6 + corrected bonus note) to reflect the honest interpretation.

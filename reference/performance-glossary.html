@@ -69,6 +69,22 @@
 <dd>Decoding several requests together so each weight byte read serves the whole batch — multiplies AI by batch size. Past <code>batch ≈ ridge ÷ AI</code>, decode turns compute-bound. Foundation of serving systems (month 5).</dd>
 </dl>
 
+<h2>GPU fundamentals</h2>
+<dl>
+<dt>Thread (GPU)</dt>
+<dd>The smallest unit of independent work on a GPU; thousands run concurrently. In a sum, each thread adds up a slice of the array. In CUDA (month 2) you'll decide how threads map onto data.</dd>
+<dt>Data parallelism</dt>
+<dd>Splitting one operation over many elements across many threads at once. The natural fit for tensor work, where the same math applies to millions of values.</dd>
+<dt>Reduction</dt>
+<dd>Combining many values into few (sum, max, mean). Done in parallel as a tree: threads produce partial results that merge in stages. Attention softmax and norms are reductions.</dd>
+<dt>Memory-level parallelism (MLP)</dt>
+<dd>How many memory requests are outstanding at once. A CPU core keeps ~10; a GPU keeps hundreds–thousands, which is why it saturates the bus on memory-bound work. The real reason GPUs win at decode.</dd>
+<dt>Latency hiding</dt>
+<dd>Running ready threads while others wait on memory (~100 ns), so latency is overlapped rather than paid. GPUs trade low latency for massive parallelism; keeping enough work available to hide latency is "occupancy."</dd>
+<dt>Unified memory (Apple Silicon)</dt>
+<dd>CPU and GPU share one physical memory on one bus — no host↔device copy. Makes CPU-vs-GPU comparisons clean and removes the PCIe transfer cost that dominates many discrete-GPU workloads.</dd>
+</dl>
+
 <h2>Measurement discipline</h2>
 <dl>
 <dt>Warmup</dt>

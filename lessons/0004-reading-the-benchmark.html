@@ -192,7 +192,31 @@ int main() {
 <li><strong>Benchmarking hygiene transfers verbatim:</strong> warm up, compile with <code>-O2</code>, defeat dead-code elimination, normalize to per-operation cost, print a verifiable result. You'll use every one of these on GPU kernels unchanged.</li>
 </ul>
 
-<h2>7 · Self-check</h2>
+<h2>7 · Your measured result — the speedup is a bottleneck meter</h2>
+<table>
+<tr><th>stride</th><th>bytes</th><th>naive ns</th><th>par ns</th><th>speedup</th><th>reading</th></tr>
+<tr class="cool"><td>1</td><td>4</td><td>0.490</td><td>0.153</td><td><strong>3.20×</strong></td><td rowspan="3">compute/latency-bound → breaking the FP chain wins big</td></tr>
+<tr class="cool"><td>2</td><td>8</td><td>0.561</td><td>0.154</td><td>3.65×</td></tr>
+<tr class="cool"><td>4</td><td>16</td><td>0.564</td><td>0.173</td><td>3.27×</td></tr>
+<tr><td>8</td><td>32</td><td>0.567</td><td>0.307</td><td>1.84×</td><td rowspan="2">transition — memory cost rising, less compute left to hide</td></tr>
+<tr><td>16</td><td>64</td><td>0.636</td><td>0.583</td><td>1.09×</td></tr>
+<tr class="hot"><td>32</td><td>128</td><td>2.172</td><td>2.171</td><td>1.00×</td><td rowspan="3">memory-bound → more accumulators do nothing</td></tr>
+<tr class="hot"><td>64</td><td>256</td><td>2.499</td><td>2.487</td><td>1.01×</td></tr>
+<tr class="hot"><td>128</td><td>512</td><td>2.780</td><td>2.784</td><td>1.00×</td></tr>
+</table>
+<p>The prediction held — and the <em>gradient</em> (3.2× → 1.84× → 1.09× → 1.00×) is the real prize. It's a continuous readout of how much of each touch was compute you could overlap. As stride grows inside the 128 B line, memory cost per touch rises; in the naive loop it hid under the FP-add latency until it grew big enough to dominate. <strong>The speedup column literally measures "what fraction of this was compute-bound."</strong> Nsight Compute's SM-busy vs memory-throughput bars (month 3) are this same meter, automated.</p>
+<div class="step">
+<h3>Two numbers worth keeping</h3>
+<ul>
+<li><strong>Real single-core memory floor:</strong> stride-1 parallel 0.153 ns/touch → <code>4 B ÷ 0.153 ns ≈ 26 GB/s</code>. That's ~5% of the 546 GB/s bus — one core flat-out gets ~1/20th of memory. Filling the bus needs ~20× that parallelism; a GPU supplies it with thousands of threads. (The naive 0.490 ns was latency-bound and understated this — the parallel rewrite reveals the truth.)</li>
+<li><strong>You crossed the roofline ridge.</strong> Arithmetic per byte fetched from DRAM: stride 1 ≈ 32 adds/line (right of ridge → compute-bound); stride 32 ≈ 1 add/line, 32× lower (left of ridge → memory-bound). The sweep slid one workload across lesson 2's ridge, and the speedup confirms compute fixes only help on the compute-bound side.</li>
+</ul>
+</div>
+<div class="reveal"><details><summary>Optional curiosity — push the floor further</summary>
+<p>Try 8 accumulators (<code>s0..s7</code>). If stride-1 parallel drops below 0.153 ns, you were still compute-throughput-bound and found more headroom; if it stalls at ~0.153, you've hit the genuine single-core memory/load-throughput wall. Either answer is a clean result — that's the game.</p>
+</details></div>
+
+<h2>8 · Self-check</h2>
 <div class="quiz">
 <ol>
 <li>In your own words: why is "ns/touch" a fairer comparison than total loop time across the rows?</li>

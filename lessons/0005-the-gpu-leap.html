@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0005 · The GPU Leap — Same Task, Thousands of Threads</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --accent:#4338ca; --accent-soft:#eef2ff; --ok:#047857; --line:#e5e7eb; --warn:#b45309; }
+  * { box-sizing: border-box; }
+  body { font-family:"Avenir Next","Segoe UI",system-ui,sans-serif; color:var(--ink); background:#fafafa; margin:0; line-height:1.6; }
+  .page { max-width:760px; margin:0 auto; padding:48px 28px 80px; }
+  .lesson-tag { font-size:.8rem; font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; }
+  h1 { font-size:1.7rem; margin:6px 0 4px; letter-spacing:-0.02em; }
+  .goal { color:var(--muted); margin-bottom:24px; }
+  h2 { font-size:1.15rem; margin:34px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--accent); }
+  p, li { font-size:.95rem; }
+  a { color:var(--accent); }
+  pre { background:#1e1e2e; color:#e6e6f0; padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:.83rem; line-height:1.55; }
+  .ann { color:#8a8aa0; }
+  code { font-family:"SF Mono",Menlo,monospace; }
+  p code, li code, td code { background:#eef; color:var(--ink); padding:1px 5px; border-radius:4px; font-size:.85em; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:14px 0; }
+  .step h3 { margin:0 0 8px; font-size:1rem; }
+  .predict { background:#fffbeb; border-left:4px solid var(--warn); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .reveal { margin:10px 0; }
+  .reveal summary { cursor:pointer; font-weight:600; color:var(--accent); }
+  .win { background:#f0fdf4; border-left:4px solid var(--ok); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .key { background:var(--accent-soft); border-left:4px solid var(--accent); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:.93rem; }
+  .quiz { background:var(--accent-soft); border-radius:12px; padding:16px 20px; margin:16px 0; }
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:.9rem; background:#fff; }
+  th, td { text-align:left; padding:7px 11px; border:1px solid var(--line); }
+  th { background:var(--accent-soft); }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="lesson-tag">Lesson 0005 · ~60 minutes · Phase 1 → GPU</span>
+<h1>The GPU Leap: Same Task, Thousands of Threads</h1>
+<p class="goal"><strong>The one thing this lesson teaches:</strong> a GPU wins at memory-bound work not by being faster, but by keeping <em>thousands</em> of memory requests in flight at once. You'll run the same array-sum you ran in C++ on your M4 Max's GPU, watch it approach the full memory bus you measured in lesson 2, and confirm the "you need ~20× more parallelism" conclusion you derived on the CPU.</p>
+
+<h2>1 · The setup — and why your Mac makes this experiment perfect</h2>
+<p>In lesson 4 you summed a 1 GiB array on one CPU core and hit ~26 GB/s — about 5% of your 546 GB/s bus — because a single core can only keep a handful of memory requests outstanding at a time. You concluded you'd need ~20× more parallel requests to fill the bus. Let's test that on the engine built for it.</p>
+<div class="key">
+<strong>The unified-memory gift.</strong> On Apple Silicon, the CPU and GPU share the <em>same physical memory on the same bus</em> — there's no copying data to a separate "GPU card." So when you sum the array on the CPU and then on the GPU, both read identical bytes over an identical 546 GB/s pipe. The <em>only</em> variable that changes is how much parallelism the engine brings. That's a controlled experiment most GPU programmers can't run cleanly — for you it's one line of code.
+</div>
+
+<h2>2 · The GPU mental model, in three sentences</h2>
+<ul>
+<li><strong>Data parallelism:</strong> summing 268M numbers is split across tens of thousands of GPU threads — each adds up a small chunk, then the partial results are combined in a tree (a <em>reduction</em>).</li>
+<li><strong>Memory-level parallelism:</strong> with that many threads, hundreds of memory requests are in flight simultaneously, so the bus stays full — this, not faster arithmetic, is the whole advantage on a memory-bound task.</li>
+<li><strong>Latency hiding:</strong> when some threads stall waiting for memory (~100 ns), the scheduler instantly runs others that are ready, so the expensive memory latency you met in lesson 3 is simply overlapped away.</li>
+</ul>
+<p>Your M4 Max GPU has 40 cores, each running many threads — together tens of thousands in flight. A single CPU core, by contrast, has one out-of-order window keeping ~10 requests going. That ratio is the experiment.</p>
+
+<h2>3 · The experiment</h2>
+<div class="step">
+<h3>Step 1 — gpu_sum.py</h3>
+<pre><code>import time
+import mlx.core as mx
+
+N = 1 &lt;&lt; 28                       <span class="ann"># 268,435,456 floats = 1 GiB, same as your C++ test</span>
+x = mx.ones((N,), dtype=mx.float32)
+mx.eval(x)                        <span class="ann"># materialize the array BEFORE timing</span>
+
+def bench(f, iters=50, warmup=10):
+    for _ in range(warmup):
+        mx.eval(f())              <span class="ann"># discard compile + warmup runs</span>
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        mx.eval(f())              <span class="ann"># force the lazy graph to actually run</span>
+    return (time.perf_counter() - t0) / iters
+
+t = bench(lambda: mx.sum(x))
+bytes_moved = N * 4              <span class="ann"># read every float once</span>
+print(f"GPU sum: {t*1e3:.3f} ms | "
+      f"{bytes_moved / t / 1e9:.0f} GB/s | "
+      f"{t / N * 1e9:.4f} ns/element")</code></pre>
+<pre><code>python3 gpu_sum.py</code></pre>
+<p>It sums the same 1 GiB of floats on the GPU and reports time, achieved bandwidth, and ns per element — the same metrics you used on the CPU, so the comparison is apples to apples.</p>
+</div>
+
+<div class="predict">
+<strong>Predict before running.</strong> Your CPU single-core floor was 0.153 ns/element (26 GB/s). For the GPU: (a) what ns/element, (b) what GB/s — and how close to your lesson-2 ceiling of 436 GB/s do you expect it to land?
+</div>
+
+<div class="reveal"><details><summary>What you should see, and why</summary>
+<p>Expect roughly <strong>2.5–3.5 ms</strong>, <strong>~300–436 GB/s</strong>, and <strong>~0.009–0.013 ns/element</strong> — i.e. a large fraction of your measured bus peak, and on the order of <strong>12–17× faster per element</strong> than one CPU core. That multiple is not a coincidence: it's the ~20× parallelism you predicted in lesson 4, made real. The GPU isn't doing the additions faster (addition was never the bottleneck here) — it's keeping enough loads in flight to saturate the same memory bus the lone CPU core could only 5%-fill.</p>
+</details></div>
+
+<h2>4 · The clean A/B — flip one line</h2>
+<div class="step">
+<h3>Step 2 — same code, same data, CPU vs GPU</h3>
+<p>MLX can run the identical operation on either engine. Add this to compare directly:</p>
+<pre><code>for dev in (mx.cpu, mx.gpu):
+    mx.set_default_device(dev)
+    t = bench(lambda: mx.sum(x))
+    name = "CPU" if dev == mx.cpu else "GPU"
+    print(f"{name}: {t*1e3:.3f} ms | {N*4 / t / 1e9:.0f} GB/s")</code></pre>
+<p>Same array in the same memory, same one line of math — only the engine differs. The GB/s gap you see <em>is</em> the parallelism gap, isolated. (MLX's CPU backend uses multiple cores, so it'll beat your single-core C++ number but still fall well short of the GPU — even all your CPU cores together can't match the GPU's memory-request throughput on this workload.)</p>
+</div>
+
+<h2>5 · What this means for inference</h2>
+<ul>
+<li><strong>This is why decode runs on GPUs.</strong> You showed in lessons 1–2 that LLM decode is memory-bound. Memory-bound work is exactly what the GPU's thousands-of-requests-in-flight design accelerates — so generation throughput lives or dies on memory bandwidth and how fully you use it.</li>
+<li><strong>But one request can't fill a big GPU.</strong> A single decode stream is like a <em>small</em> array — too little parallel work to keep a datacenter GPU's threads busy, so it wastes most of the chip. The fix is the same lever from lesson 2: <strong>batch many requests together</strong> to supply enough parallel work. This is the seed of continuous batching (vLLM, month 5).</li>
+<li><strong>Soon you'll write the threads yourself.</strong> Today MLX created and scheduled the threads for you. In month 2 (CUDA) <em>you</em> will decide how work maps onto threads, how they read memory (coalesced — your stride lesson!), and how partial sums combine. Every concept you just watched, you'll soon control by hand.</li>
+</ul>
+
+<h2>6 · Self-check</h2>
+<div class="quiz">
+<ol>
+<li>A colleague says "the GPU summed faster because its cores do addition faster." Why is that the wrong explanation for this workload?</li>
+<li>You measured GPU ≈ 16× your single CPU core. Connect that number to your lesson-4 conclusion.</li>
+<li>Why does Apple's unified memory make the CPU-vs-GPU comparison unusually clean compared to a typical NVIDIA setup?</li>
+<li>Inference transfer: why does a single user's decode request underutilize a large GPU, and what's the standard remedy?</li>
+</ol>
+<details><summary>Answers</summary>
+<ol>
+<li>The task is memory-bound — addition was never the limiter. The GPU wins by keeping far more memory requests in flight (memory-level parallelism), saturating the bus the CPU core could only 5%-fill.</li>
+<li>Lesson 4 said one core gets ~1/20th of the bus and you'd need ~20× the parallelism to fill it; the GPU supplies that parallelism, so it runs ~the same multiple faster.</li>
+<li>No host↔device copy and one shared bus mean both engines read identical bytes at the same bandwidth — the only variable is parallelism. On an NVIDIA box you'd also pay PCIe transfer time and use separate memory, muddying the comparison.</li>
+<li>One stream is too little parallel work to keep all GPU threads busy, so most of the chip idles; batch many requests so the GPU has enough independent work to saturate.</li>
+</ol>
+</details>
+</div>
+
+<div class="win"><strong>Your win:</strong> you ran the same workload on a CPU core and a GPU over the same memory bus, and watched raw parallelism turn 5% bus utilization into near-peak — confirming, by measurement, the conclusion you derived on the CPU. You now understand <em>why</em> GPUs dominate inference, not as a slogan but as a number you produced. Next you'll start telling the GPU's threads what to do.</div>
+
+<p class="footer">Bring back your GPU GB/s and ns/element (and the CPU-vs-GPU A/B if you ran it). That closes Phase 1 — the performance-foundations month — and we cross into CUDA, where you write the kernels. Questions about MLX, lazy eval, or unified memory? Ask your teaching agent.<br><br>Open this lesson: <code>open ~/playground-ai/research/lessons/0005-the-gpu-leap.html</code></p>
+
+</div>
+</body>
+</html>
